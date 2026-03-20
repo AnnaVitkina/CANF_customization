@@ -359,7 +359,7 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
 
 
 # ---- Gradio UI definition ----
-with gr.Blocks(title="CANF Analyzer") as demo:
+with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
     gr.Markdown("# 📊 CANF Analyzer")
     gr.Markdown("### Process and match shipment data with rate card lanes")
     
@@ -498,10 +498,10 @@ if __name__ == "__main__":
     
     if in_colab:
         print("🚀 Launching Gradio interface for Google Colab...")
-        demo.launch(server_name="0.0.0.0", share=False, debug=False, show_error=True, theme=gr.themes.Soft())
+        demo.launch(server_name="0.0.0.0", share=False, debug=False, show_error=True)
     else:
         print("🚀 Launching Gradio interface locally...")
         print(f"💡 Input files will be saved to: {input_dir}")
         print(f"💡 Output files will be saved to: {output_dir}")
         print(f"💡 Intermediate files will be saved to: {partly_df_dir}")
-        demo.launch(server_name="127.0.0.1", share=False, theme=gr.themes.Soft())
+        demo.launch(server_name="127.0.0.1", share=False)
