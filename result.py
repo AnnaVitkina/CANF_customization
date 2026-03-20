@@ -293,7 +293,8 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
             from shipment_input import process_etof_file
             if etof_filename:
                 log_status(f"📄 Processing ETOF file: {etof_filename}", "info")
-                etof_df, etof_columns = process_etof_file(os.path.join("input", etof_filename))
+                # process_etof_file prepends "input/" internally; pass filename only
+                etof_df, etof_columns = process_etof_file(etof_filename)
                 log_status(f"✓ ETOF processed: {etof_df.shape[0]} rows, {len(etof_columns)} columns", "info")
         except Exception as e:
             error_msg = f"❌ Error processing ETOF file: {str(e)}"
@@ -307,7 +308,8 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
             from rate_card_input import process_rate_card, process_business_rules
             if rate_card_filename:
                 log_status(f"📄 Processing Rate Card file: {rate_card_filename}", "info")
-                rate_card_df, rate_card_columns, rate_card_conditions = process_rate_card(os.path.join("input", rate_card_filename))
+                # process_rate_card prepends "input/" internally; pass filename only
+                rate_card_df, rate_card_columns, rate_card_conditions = process_rate_card(rate_card_filename)
                 log_status(f"✓ Rate Card processed: {rate_card_df.shape[0]} rows, {len(rate_card_columns)} columns, {len(rate_card_conditions)} conditions", "info")
         except Exception as e:
             error_msg = f"❌ Error processing Rate Card file: {str(e)}"
@@ -330,9 +332,10 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
             log_status(f"   This step maps rate card columns to ETOF columns and creates vocabulary_mapping.json", "info")
             log_status(f"   Ignore Rate Card Columns: {ignore_columns_list if ignore_columns_list else 'None'}", "info")
             
+            # vocabulary.map_and_rename_columns joins with input/; pass filenames only
             vocab_result = map_and_rename_columns(
-                rate_card_file_path=os.path.join("input", rate_card_filename),
-                etof_file_path=os.path.join("input", etof_filename),
+                rate_card_file_path=rate_card_filename,
+                etof_file_path=etof_filename,
                 output_txt_path=os.path.join("partly_df", "column_mapping_results.txt"),
                 ignore_rate_card_columns=ignore_columns_list
             )
@@ -608,13 +611,6 @@ with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
 
 if __name__ == "__main__":
     import sys
-
-    # Colab + Jupyter: Gradio/asyncio "different event loop" — patch nested loops if available
-    try:
-        import nest_asyncio
-        nest_asyncio.apply()
-    except ImportError:
-        pass
     
     # Create input, output, and partly_df folders when program starts
     ensure_project_on_syspath()
