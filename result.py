@@ -5,15 +5,67 @@ import gradio as gr
 from pathlib import Path
 from typing import Optional
 
-# Marker file that identifies the project root (same folder as this script)
-_PROJECT_MARKER = "shipment_input.py"
+# ---------------------------------------------------------------------------
+# Project root detection (for Colab exec/notebook when __file__ or cwd is wrong):
+# CANF_PROJECT_ROOT, __file__, common clone paths, scan /content/*, cwd-relative
+# repo names, then walk parents. A directory qualifies if it has shipment_input.py
+# or vocabulary.py (this repo).
+# ---------------------------------------------------------------------------
+
+_PROJECT_MARKERS = (
+    "shipment_input.py",
+    "vocabulary.py",
+)
+
+
+def _is_project_dir(p: Path) -> bool:
+    if not p.is_dir():
+        return False
+    return any((p / name).is_file() for name in _PROJECT_MARKERS)
+
+
+def _known_repo_paths_colab() -> list:
+    """Typical Google Colab clone locations for this repo (underscore or hyphen)."""
+    extra = []
+    for path in ("/content/CANF_customization", "/content/CANF-customization"):
+        p = Path(path)
+        if _is_project_dir(p):
+            extra.append(p.resolve())
+    cwd = Path.cwd()
+    for rel in (Path("CANF_customization"), Path("CANF-customization")):
+        p = (cwd / rel).resolve()
+        if _is_project_dir(p):
+            extra.append(p)
+    return extra
+
+
+def _colab_clone_candidates() -> list:
+    """Likely repo locations when cwd is /content but code lives in /content/<repo>."""
+    extra = []
+    for p in _known_repo_paths_colab():
+        if p not in extra:
+            extra.append(p)
+    content = Path("/content")
+    if content.is_dir():
+        try:
+            for child in sorted(content.iterdir()):
+                if child.is_dir() and _is_project_dir(child):
+                    if child.resolve() not in extra:
+                        extra.append(child.resolve())
+        except OSError:
+            pass
+    cwd = Path.cwd()
+    for folder_name in ("CANF_customization", "CANF-customization", "Apple CANF customization"):
+        p = (cwd / folder_name).resolve()
+        if _is_project_dir(p) and p not in extra:
+            extra.append(p)
+    return extra
 
 
 def get_project_root() -> Optional[Path]:
     """
-    Find the folder that contains shipment_input.py and the other CANF modules.
-    Works when __file__ is missing (exec/notebook) or cwd is not the project folder.
-    Set env CANF_PROJECT_ROOT to the project folder if auto-detection fails.
+    Find the folder that contains this project's modules (see _PROJECT_MARKERS).
+    Set env CANF_PROJECT_ROOT if auto-detection fails.
     """
     candidates = []
     env_root = os.environ.get("CANF_PROJECT_ROOT", "").strip()
@@ -23,6 +75,16 @@ def get_project_root() -> Optional[Path]:
         candidates.append(Path(__file__).resolve().parent)
     except NameError:
         pass
+    # Prefer known Colab clone paths, then scan all /content/* subdirs that look like this repo
+    _seen_norm = {c.resolve() for c in candidates if hasattr(c, "resolve")}
+    for p in _colab_clone_candidates():
+        try:
+            pr = p.resolve()
+        except OSError:
+            pr = p
+        if pr not in _seen_norm:
+            _seen_norm.add(pr)
+            candidates.insert(0, p)
     cwd = Path.cwd().resolve()
     candidates.append(cwd)
     # Walk up from cwd (user may launch from a subfolder)
@@ -41,7 +103,7 @@ def get_project_root() -> Optional[Path]:
         if c in seen:
             continue
         seen.add(c)
-        if (c / _PROJECT_MARKER).is_file():
+        if _is_project_dir(c):
             return c
     return None
 
@@ -427,6 +489,17 @@ with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
     with gr.Accordion("📖 Instructions & Information", open=False):
         gr.Markdown("""
         ## How to Use This Workflow
+
+        ### Google Colab (recommended)
+        Do **not** `chdir` to `/content` before loading this app — stay inside the cloned repo, or set `CANF_PROJECT_ROOT`.
+        ```text
+        !git clone https://github.com/YOUR_ORG/CANF_customization.git  # or pull if already cloned
+        %cd /content/CANF_customization
+        !pip install -q gradio pandas openpyxl nest_asyncio
+        !python result.py
+        ```
+        If you use `exec(open(...).read())` from `/content`, the app still tries to auto-detect `/content/CANF_customization`.
+        Optional: `os.environ["CANF_PROJECT_ROOT"] = "/content/CANF_customization"` before `exec`.
         
         ### Step 1: Upload Required Files
         - **Rate Card File** (Required): Excel file containing rate card data (.xlsx)
@@ -535,12 +608,24 @@ with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
 
 if __name__ == "__main__":
     import sys
+
+    # Colab + Jupyter: Gradio/asyncio "different event loop" — patch nested loops if available
+    try:
+        import nest_asyncio
+        nest_asyncio.apply()
+    except ImportError:
+        pass
     
     # Create input, output, and partly_df folders when program starts
-    try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-    except NameError:
-        script_dir = os.getcwd()
+    ensure_project_on_syspath()
+    _root = get_project_root()
+    if _root:
+        script_dir = str(_root)
+    else:
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+        except NameError:
+            script_dir = os.getcwd()
     
     input_dir = os.path.join(script_dir, "input")
     output_dir = os.path.join(script_dir, "output")
@@ -559,7 +644,7 @@ if __name__ == "__main__":
     
     if in_colab:
         print("🚀 Launching Gradio interface for Google Colab...")
-        demo.launch(server_name="0.0.0.0", share=False, debug=True, show_error=True)
+        demo.launch(server_name="0.0.0.0", share=False, debug=False, show_error=True)
     else:
         print("🚀 Launching Gradio interface locally...")
         print(f"💡 Input files will be saved to: {input_dir}")
