@@ -3,21 +3,75 @@ import sys
 import shutil
 import gradio as gr
 from pathlib import Path
+from typing import Optional
 
-# Auto-detect and add script directory to Python path
-def setup_python_path():
-    """Setup Python path to include the script directory for imports."""
+# Marker file that identifies the project root (same folder as this script)
+_PROJECT_MARKER = "shipment_input.py"
+
+
+def get_project_root() -> Optional[Path]:
+    """
+    Find the folder that contains shipment_input.py and the other CANF modules.
+    Works when __file__ is missing (exec/notebook) or cwd is not the project folder.
+    Set env CANF_PROJECT_ROOT to the project folder if auto-detection fails.
+    """
+    candidates = []
+    env_root = os.environ.get("CANF_PROJECT_ROOT", "").strip()
+    if env_root:
+        candidates.append(Path(env_root).resolve())
     try:
-        if '__file__' in globals():
-            script_dir = os.path.dirname(os.path.abspath(__file__))
+        candidates.append(Path(__file__).resolve().parent)
+    except NameError:
+        pass
+    cwd = Path.cwd().resolve()
+    candidates.append(cwd)
+    # Walk up from cwd (user may launch from a subfolder)
+    p = cwd
+    for _ in range(8):
+        candidates.append(p)
+        if p.parent == p:
+            break
+        p = p.parent
+    seen = set()
+    for cand in candidates:
+        try:
+            c = cand.resolve()
+        except OSError:
+            continue
+        if c in seen:
+            continue
+        seen.add(c)
+        if (c / _PROJECT_MARKER).is_file():
+            return c
+    return None
+
+
+def ensure_project_on_syspath() -> Optional[str]:
+    """Insert project root at front of sys.path so `import shipment_input` always works."""
+    root = get_project_root()
+    if root is None:
+        return None
+    s = str(root)
+    if s not in sys.path:
+        sys.path.insert(0, s)
+    return s
+
+
+def setup_python_path():
+    """Setup Python path to include the project directory for imports."""
+    try:
+        added = ensure_project_on_syspath()
+        if added:
+            print(f"📁 Added project root to Python path: {added}")
         else:
-            script_dir = os.getcwd()
-        
-        if script_dir and script_dir not in sys.path:
-            sys.path.insert(0, script_dir)
-            print(f"📁 Added to Python path: {script_dir}")
+            # Last resort: cwd
+            cwd = os.getcwd()
+            if cwd and cwd not in sys.path:
+                sys.path.insert(0, cwd)
+                print(f"📁 Added cwd to Python path (shipment_input.py not found): {cwd}")
     except Exception as e:
-        print(f"⚠️ Warning: Could not auto-detect script directory: {e}")
+        print(f"⚠️ Warning: Could not set up Python path: {e}")
+
 
 setup_python_path()
 
@@ -94,12 +148,19 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
     
     log_status("✅ Validation passed. Starting workflow...", "info")
     
+    # Resolve project root (folder with shipment_input.py) so imports and folders stay consistent
+    ensure_project_on_syspath()
+    project_path = get_project_root()
+    if project_path:
+        script_dir = str(project_path)
+    else:
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+        except NameError:
+            script_dir = os.getcwd()
+    log_status(f"📁 Working project directory: {script_dir}", "info")
+
     # Create output and input directories
-    try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-    except NameError:
-        script_dir = os.getcwd()
-    
     input_dir = os.path.join(script_dir, "input")
     output_dir = os.path.join(script_dir, "output")
     partly_df_dir = os.path.join(script_dir, "partly_df")
@@ -150,7 +211,7 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
                 mismatch_report_filenames.append(mismatch_filename)
                 log_status(f"✓ Mismatch Report file saved: {mismatch_filename}", "info")
     
-    # Change to script directory so relative paths work
+    # Change to project directory so relative paths (input/, partly_df/) work
     original_cwd = os.getcwd()
     try:
         os.chdir(script_dir)
