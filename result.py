@@ -147,7 +147,7 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
     1. Save uploaded files to input/ folder
     2. Process ETOF file (shipment_input.py)
     3. Process Rate Card file (rate_card_input.py) 
-    4. Run vocabulary mapping (vocabulary.py) -> creates vocabulary_mapping.json and Filtered_Rate_Card_with_Conditions.json
+    4. Run vocabulary mapping (vocabulary.py) -> vocabulary_mapping.json; then rate_card JSON for matching
     5. Run matching (matching.py) -> creates Matched_Shipments_with.json
     6. Run formatting (formatting.py) -> creates Matched_Shipments_formatted.json and .xlsx
     7. Save final results to output/ folder
@@ -273,6 +273,10 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
                 mismatch_report_filenames.append(mismatch_filename)
                 log_status(f"✓ Mismatch Report file saved: {mismatch_filename}", "info")
     
+    # Absolute paths so matching/formatting always find files even if cwd changes
+    partly_df_abs = os.path.join(script_dir, "partly_df")
+    os.makedirs(partly_df_abs, exist_ok=True)
+
     # Change to project directory so relative paths (input/, partly_df/) work
     original_cwd = os.getcwd()
     try:
@@ -350,10 +354,15 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
             
             if etof_renamed is not None and not etof_renamed.empty:
                 log_status(f"✓ Vocabulary mapping completed: {etof_renamed.shape[0]} rows", "info")
-                log_status(f"   Created: partly_df/vocabulary_mapping.json", "info")
-                log_status(f"   Created: partly_df/Filtered_Rate_Card_with_Conditions.json", "info")
+                log_status(f"   Created: {os.path.join(partly_df_abs, 'vocabulary_mapping.json')}", "info")
             else:
                 log_status(f"⚠️ Warning: Vocabulary mapping completed but no data available", "warning")
+
+            # map_and_rename_columns does NOT write Filtered_Rate_Card_with_Conditions.json — matching needs it
+            from rate_card_input import save_rate_card_output
+            log_status(f"📄 Building Filtered_Rate_Card_with_Conditions.json for matching...", "info")
+            save_rate_card_output(rate_card_filename, save_excel=False, save_json=True)
+            log_status(f"   Created: {os.path.join(partly_df_abs, 'Filtered_Rate_Card_with_Conditions.json')}", "info")
                 
         except Exception as e:
             error_msg = f"❌ Error in vocabulary mapping: {str(e)}"
@@ -370,14 +379,14 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
             log_status(f"   This step compares each shipment to rate card lanes and finds best matches", "info")
             
             matching_result = run_matching_from_json(
-                rate_card_json_path=os.path.join("partly_df", "Filtered_Rate_Card_with_Conditions.json"),
-                vocabulary_json_path=os.path.join("partly_df", "vocabulary_mapping.json"),
-                output_dir="partly_df"
+                rate_card_json_path=os.path.join(partly_df_abs, "Filtered_Rate_Card_with_Conditions.json"),
+                vocabulary_json_path=os.path.join(partly_df_abs, "vocabulary_mapping.json"),
+                output_dir=partly_df_abs,
             )
             
             if matching_result and matching_result[0]:
                 log_status(f"✓ Matching completed successfully", "info")
-                log_status(f"   Created: partly_df/Matched_Shipments_with.json", "info")
+                log_status(f"   Created: {os.path.join(partly_df_abs, 'Matched_Shipments_with.json')}", "info")
             else:
                 log_status(f"⚠️ Warning: Matching process did not produce output", "warning")
                 
@@ -396,15 +405,15 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
             log_status(f"   This step adds 'Possible Best Match' column and reformats comments", "info")
             
             formatting_result = run_formatting(
-                input_json_path=os.path.join("partly_df", "Matched_Shipments_with.json"),
-                output_json_path=os.path.join("partly_df", "Matched_Shipments_formatted.json"),
-                output_xlsx_path=os.path.join("partly_df", "Matched_Shipments_formatted.xlsx")
+                input_json_path=os.path.join(partly_df_abs, "Matched_Shipments_with.json"),
+                output_json_path=os.path.join(partly_df_abs, "Matched_Shipments_formatted.json"),
+                output_xlsx_path=os.path.join(partly_df_abs, "Matched_Shipments_formatted.xlsx"),
             )
             
             if formatting_result and formatting_result[0]:
                 log_status(f"✓ Formatting completed successfully", "info")
-                log_status(f"   Created: partly_df/Matched_Shipments_formatted.json", "info")
-                log_status(f"   Created: partly_df/Matched_Shipments_formatted.xlsx", "info")
+                log_status(f"   Created: {os.path.join(partly_df_abs, 'Matched_Shipments_formatted.json')}", "info")
+                log_status(f"   Created: {os.path.join(partly_df_abs, 'Matched_Shipments_formatted.xlsx')}", "info")
             else:
                 log_status(f"⚠️ Warning: Formatting process did not produce output", "warning")
                 
@@ -420,8 +429,8 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
         final_xlsx_path = os.path.join(output_dir, "Matched_Shipments_formatted.xlsx")
         
         try:
-            source_json = os.path.join("partly_df", "Matched_Shipments_formatted.json")
-            source_xlsx = os.path.join("partly_df", "Matched_Shipments_formatted.xlsx")
+            source_json = os.path.join(partly_df_abs, "Matched_Shipments_formatted.json")
+            source_xlsx = os.path.join(partly_df_abs, "Matched_Shipments_formatted.xlsx")
             
             if os.path.exists(source_json):
                 shutil.copy2(source_json, final_json_path)
@@ -531,9 +540,7 @@ with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
         1. **File Processing**: Uploaded files are saved to `input/` folder
         2. **ETOF Processing**: ETOF file is processed (with optional enrichment from mismatch reports)
         3. **Rate Card Processing**: Rate card file is processed and business rules are extracted
-        4. **Vocabulary Mapping**: Columns are mapped and renamed to standard names
-           - Creates `partly_df/vocabulary_mapping.json`
-           - Creates `partly_df/Filtered_Rate_Card_with_Conditions.json`
+        4. **Vocabulary Mapping**: Columns are mapped and renamed; writes `partly_df/vocabulary_mapping.json`, then builds `partly_df/Filtered_Rate_Card_with_Conditions.json` (required for matching)
         5. **Matching**: Shipments are matched with rate card entries
            - Creates `partly_df/Matched_Shipments_with.json`
         6. **Formatting**: Adds "Possible Best Match" column and reformats comments
@@ -613,7 +620,8 @@ with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
 if __name__ == "__main__":
     import sys
     
-    # Create input, output, and partly_df folders when program starts
+    # Resolve project root only — do NOT mkdir here (avoids duplicate /content/input when cwd≠repo).
+    # Folders are created when you run the workflow with the correct script_dir.
     ensure_project_on_syspath()
     _root = get_project_root()
     if _root:
@@ -628,13 +636,8 @@ if __name__ == "__main__":
     output_dir = os.path.join(script_dir, "output")
     partly_df_dir = os.path.join(script_dir, "partly_df")
     
-    os.makedirs(input_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(partly_df_dir, exist_ok=True)
-    
-    print(f"📁 Created input folder: {input_dir}")
-    print(f"📁 Created output folder: {output_dir}")
-    print(f"📁 Created intermediate files folder: {partly_df_dir}")
+    print(f"📁 Project root: {script_dir}")
+    print(f"📁 Workflow will use: {input_dir} | {output_dir} | {partly_df_dir}")
     
     # Check if running in Colab
     in_colab = 'google.colab' in sys.modules
