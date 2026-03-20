@@ -336,7 +336,8 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
             vocab_result = map_and_rename_columns(
                 rate_card_file_path=rate_card_filename,
                 etof_file_path=etof_filename,
-                output_txt_path=os.path.join("partly_df", "column_mapping_results.txt"),
+                # vocabulary.py already writes under partly_df/; pass basename only
+                output_txt_path="column_mapping_results.txt",
                 ignore_rate_card_columns=ignore_columns_list
             )
             
