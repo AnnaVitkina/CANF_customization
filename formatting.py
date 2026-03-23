@@ -6,6 +6,7 @@ the single best lane among tied lanes (Service exact match first, then City/Post
 import json
 import os
 import re
+from datetime import date, datetime
 
 
 def _normalize(s):
@@ -557,9 +558,26 @@ def _build_combined_geo_message(differences_list, lane_rule_pairs, geo_section):
     return f"{tag} value '{shipment_val}' does not match rate card {rc_vals_str}"
 
 
+def _is_zero_diff_count(row):
+    """True if row has diff_count exactly 0 (perfect match to best lane(s))."""
+    dc = row.get("diff_count")
+    if dc is None:
+        return False
+    try:
+        return int(dc) == 0
+    except (TypeError, ValueError):
+        return False
+
+
 def add_possible_best_match_column(rows):
     """Add 'Possible Best Match' to each row with the full differ comment. Modifies rows in place."""
     for row in rows:
+        if _is_zero_diff_count(row):
+            bl = row.get("best_lane(s)")
+            lane_str = (str(bl).strip() if bl is not None else "")
+            if lane_str:
+                row["Possible Best Match"] = f"The lane {lane_str} could be applied"
+                continue
         diff_list = row.get("differences_list") or []
         lane_info, section = compute_possible_best_match(diff_list)
         if lane_info is None:
@@ -693,6 +711,245 @@ def reformat_comments(rows):
     return rows
 
 
+def _finalize_formatted_output_rows(rows):
+    """
+    For JSON/XLSX output: drop diff_count, differences, best_lane(s); rename differences_list -> Discrepancies (list).
+    Call after reformat_comments (while rows still use differences_list). best_lane(s) is omitted from exports only.
+    """
+    for row in rows:
+        row.pop("diff_count", None)
+        row.pop("differences", None)
+        row.pop("best_lane(s)", None)
+        if "differences_list" in row:
+            row["Discrepancies"] = row.pop("differences_list")
+    return rows
+
+
+def _apply_matched_shipments_sheet_appearance(ws):
+    """
+    Excel layout to match Result-style output: dark blue header row (white bold centered,
+    wrap), freeze below header, column widths, YYYYMMDD for SHIP_DATE, integer display for
+    SHIPMENT_ID. Appearance only — does not change underlying JSON or pipeline logic.
+    """
+    try:
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        return
+
+    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=11)
+    yellow_header_fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+    yellow_header_font = Font(color="000000", bold=True, size=11)
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    data_left = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    data_center = Alignment(horizontal="center", vertical="top", wrap_text=False)
+
+    # Widths aligned with sample Result (31) (3).xlsx; extras for internal column names
+    col_width_by_header = {
+        "LC #": 17,
+        "LC": 17,
+        "ETOF #": 16,
+        "ETOF": 16,
+        "SHIPMENT_ID": 13,
+        "DELIVERY_NUMBER": 17,
+        "Carrier": 9,
+        "SHIP_DATE": 11,
+        "Lane ID": 10,
+        "Flow Type": 11,
+        "ORIGINAL_SERVICE": 11,
+        "Origin Country": 16,
+        "SHIP_COUNTRY": 16,
+        "Origin Port": 13,
+        "SHIP_AIRPORT": 13,
+        "SHIP_SEAPORT": 13,
+        "Destination Country": 21,
+        "CUST_COUNTRY": 21,
+        "Destination Port": 18,
+        "CUST_AIRPORT": 18,
+        "CUST_SEAPORT": 18,
+        "Original File Name": 50,
+        "ORIG_FILE_NAME": 50,
+        "Origin Postal Code": 20,
+        "SHIP_POST": 20,
+        "Destination Postal Code": 25,
+        "CUST_POST": 25,
+        "CARRIER_NAME": 15,
+        "comment": 60,
+        "Discrepancies": 60,
+        "Possible Best Match": 60,
+        "Accessorial_lane": 60,
+        "Service": 14,
+        "SERVICE": 14,
+        "ISD": 18,
+        "Billing account": 14,
+        "TRANSPORT_MODE": 16,
+        "CONT_LOAD": 14,
+        "BU_NAME": 12,
+        "INVOICE_ENTITY": 28,
+        "SHIP_CITY": 14,
+        "CUST_CITY": 14,
+        "MEASUREMENT": 24,
+        "BUSINESS_SEGMENT": 16,
+        "INV_TYPE": 10,
+    }
+    default_width = 18
+
+    max_col = ws.max_column
+    max_row = ws.max_row
+    if max_col is None or max_col < 1 or max_row is None or max_row < 1:
+        return
+
+    headers = [ws.cell(1, c).value for c in range(1, max_col + 1)]
+
+    ws.row_dimensions[1].height = 36
+    for c in range(1, max_col + 1):
+        cell = ws.cell(1, c)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_align
+
+    for c in range(1, max_col + 1):
+        h = headers[c - 1]
+        if h in ("Discrepancies", "Possible Best Match"):
+            cell = ws.cell(1, c)
+            cell.fill = yellow_header_fill
+            cell.font = yellow_header_font
+            cell.alignment = header_align
+
+    ws.freeze_panes = "A2"
+
+    for c in range(1, max_col + 1):
+        letter = get_column_letter(c)
+        h = headers[c - 1]
+        key = str(h) if h is not None else ""
+        ws.column_dimensions[letter].width = col_width_by_header.get(key, default_width)
+
+    center_headers = {"SHIPMENT_ID", "SHIP_DATE"}
+    ship_date_col = None
+    shipment_id_col = None
+    for c in range(1, max_col + 1):
+        h = headers[c - 1]
+        if h == "SHIP_DATE":
+            ship_date_col = c
+        elif h == "SHIPMENT_ID":
+            shipment_id_col = c
+
+    for r in range(2, max_row + 1):
+        for c in range(1, max_col + 1):
+            h = headers[c - 1]
+            cell = ws.cell(r, c)
+            cell.alignment = data_center if h in center_headers else data_left
+
+    def _to_excel_date(val):
+        if val is None:
+            return None
+        if isinstance(val, datetime):
+            return val.replace(tzinfo=None) if val.tzinfo else val
+        if isinstance(val, date):
+            return datetime(val.year, val.month, val.day)
+        # pandas.Timestamp
+        if hasattr(val, "to_pydatetime"):
+            try:
+                return val.to_pydatetime().replace(tzinfo=None)
+            except Exception:
+                return None
+        return None
+
+    if ship_date_col:
+        for r in range(2, max_row + 1):
+            cell = ws.cell(r, ship_date_col)
+            v = cell.value
+            if v is None:
+                continue
+            pyd = _to_excel_date(v)
+            if pyd is not None:
+                cell.value = pyd
+                cell.number_format = "yyyymmdd"
+                continue
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                fv = float(v)
+                if fv == int(fv) and 19000000 <= int(fv) <= 30000000:
+                    cell.value = int(fv)
+                    cell.number_format = "yyyymmdd"
+                    continue
+                # Excel date serial from pandas/openpyxl
+                if 20000 < fv < 600000:
+                    cell.number_format = "yyyymmdd"
+                    continue
+            s = str(v).strip()
+            if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+                try:
+                    cell.value = datetime.strptime(s[:10], "%Y-%m-%d")
+                    cell.number_format = "yyyymmdd"
+                except ValueError:
+                    pass
+            elif len(s) == 8 and s.isdigit():
+                cell.value = int(s)
+                cell.number_format = "yyyymmdd"
+
+    if shipment_id_col:
+        for r in range(2, max_row + 1):
+            cell = ws.cell(r, shipment_id_col)
+            v = cell.value
+            if v is None:
+                continue
+            if isinstance(v, float) and v == int(v):
+                cell.value = int(v)
+                cell.number_format = "0"
+            elif isinstance(v, str) and v.strip().isdigit():
+                cell.value = int(v.strip())
+                cell.number_format = "0"
+            # non-numeric IDs: leave General / text
+
+
+def _drop_all_empty_columns(df):
+    """
+    Drop columns where every row is empty (None/NaN/blank string).
+    Used for Excel export only so the sheet has no all-blank columns.
+    """
+    import pandas as pd
+
+    if df is None or df.empty or len(df.columns) == 0:
+        return df
+
+    def is_empty(v):
+        if v is None:
+            return True
+        if isinstance(v, str) and not v.strip():
+            return True
+        try:
+            if pd.isna(v):
+                return True
+        except (TypeError, ValueError):
+            pass
+        return False
+
+    keep = [c for c in df.columns if not all(is_empty(v) for v in df[c])]
+    return df[keep] if keep else df
+
+
+def _reorder_matched_shipments_excel_columns(df):
+    """
+    Excel column order: LC, ISD (if present), ETOF, CARRIER_NAME, SHIPMENT_ID (if present),
+    DELIVERY_NUMBER, SHIP_DATE, then all other columns in their existing order.
+    """
+    if df is None or len(df.columns) == 0:
+        return df
+    preferred = [
+        "LC",
+        "ISD",
+        "ETOF",
+        "CARRIER_NAME",
+        "SHIPMENT_ID",
+        "DELIVERY_NUMBER",
+        "SHIP_DATE",
+    ]
+    front = [c for c in preferred if c in df.columns]
+    rest = [c for c in df.columns if c not in preferred]
+    return df[front + rest]
+
+
 def run_formatting(
     input_json_path=None,
     output_json_path=None,
@@ -724,6 +981,7 @@ def run_formatting(
 
     add_possible_best_match_column(rows)
     reformat_comments(rows)
+    _finalize_formatted_output_rows(rows)
 
     output_json_path = output_json_path or os.path.join(
         partly_df, "Matched_Shipments_formatted.json"
@@ -741,20 +999,22 @@ def run_formatting(
             output_xlsx_path = output_xlsx_path or os.path.join(
                 partly_df, "Matched_Shipments_formatted.xlsx"
             )
-            # Build Excel from list of dicts; differences_list may be a list - keep as string for Excel
+            # Build Excel from list of dicts; Discrepancies may be a list - join for Excel cells
             excel_rows = []
             for r in rows:
                 row_copy = dict(r)
-                if "differences_list" in row_copy and isinstance(
-                    row_copy["differences_list"], list
+                if "Discrepancies" in row_copy and isinstance(
+                    row_copy["Discrepancies"], list
                 ):
-                    row_copy["differences_list"] = "\n".join(
-                        row_copy["differences_list"]
-                    )
+                    row_copy["Discrepancies"] = "\n".join(row_copy["Discrepancies"])
                 excel_rows.append(row_copy)
             df = pd.DataFrame(excel_rows)
+            df = _drop_all_empty_columns(df)
+            df = _reorder_matched_shipments_excel_columns(df)
             with pd.ExcelWriter(output_xlsx_path, engine="openpyxl") as writer:
                 df.to_excel(writer, sheet_name="Matched Shipments", index=False)
+                ws = writer.sheets["Matched Shipments"]
+                _apply_matched_shipments_sheet_appearance(ws)
             print(f"Saved: {output_xlsx_path}")
         except Exception as e:
             print(f"[WARNING] Could not write Excel: {e}")
