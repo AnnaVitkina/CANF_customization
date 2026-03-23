@@ -137,8 +137,7 @@ def setup_python_path():
 
 setup_python_path()
 
-def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=None, 
-                             ignore_rate_card_columns=None):
+def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=None):
     """
     Main workflow for use in Gradio.
     Accepts uploaded files and user input; returns downloadable files and status messages.
@@ -326,15 +325,8 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
         try:
             from vocabulary import map_and_rename_columns
             
-            # Parse ignore_rate_card_columns from comma-separated string to list
-            ignore_columns_list = None
-            if ignore_rate_card_columns and ignore_rate_card_columns.strip():
-                ignore_columns_list = [col.strip() for col in ignore_rate_card_columns.split(',') if col.strip()]
-                log_status(f"ℹ️ Ignoring rate card columns: {', '.join(ignore_columns_list)}", "info")
-            
             log_status(f"🔤 Processing Vocabulary Mapping...", "info")
             log_status(f"   This step maps rate card columns to ETOF columns and creates vocabulary_mapping.json", "info")
-            log_status(f"   Ignore Rate Card Columns: {ignore_columns_list if ignore_columns_list else 'None'}", "info")
             
             # vocabulary.map_and_rename_columns joins with input/; pass filenames only
             vocab_result = map_and_rename_columns(
@@ -342,7 +334,7 @@ def run_full_workflow_gradio(rate_card_file, etof_file, mismatch_report_files=No
                 etof_file_path=etof_filename,
                 # vocabulary.py already writes under partly_df/; pass basename only
                 output_txt_path="column_mapping_results.txt",
-                ignore_rate_card_columns=ignore_columns_list
+                ignore_rate_card_columns=None,
             )
             
             if vocab_result is None:
@@ -522,15 +514,7 @@ with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
         - **Mismatch Report File(s)** (Optional): Excel file(s) for ETOF enrichment
           - You can upload multiple mismatch report files
         
-        ### Step 3: Configure Advanced Options (Optional)
-        - **Ignore Rate Card Columns**: Enter comma-separated column names to exclude from processing
-          - Example: `Column1, Column2, Column3`
-          - **How it works**: These columns will be excluded from vocabulary mapping and matching processes.
-            They are removed from the rate card dataframe before column mapping occurs, so they won't be
-            matched to ETOF columns or used in the matching logic. This is useful for excluding columns
-            that are not relevant for matching (e.g., internal notes, metadata columns, etc.)
-        
-        ### Step 4: Run Workflow
+        ### Step 3: Run Workflow
         - Click "Run Analyzer" button
         - Wait for processing to complete
         - Check the Status/Errors section for any issues
@@ -575,13 +559,6 @@ with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
             file_count="multiple"
         )
     
-    # Ignore rate card columns input
-    ignore_rate_card_columns_input = gr.Textbox(
-        label="Ignore Rate Card Columns (Optional)",
-        placeholder="Enter column names separated by commas (e.g., Column1, Column2, Column3)",
-        info="Rate card columns to exclude from processing. Separate multiple columns with commas. These columns will be removed from the rate card before vocabulary mapping and matching."
-    )
-    
     gr.Markdown("---")
     launch_button = gr.Button("🚀 Run Analyzer", variant="primary", size="lg")
     
@@ -595,13 +572,12 @@ with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
             placeholder="Workflow status and error messages will appear here..."
         )
     
-    def launch_workflow(rate_card_file, etof_file, mismatch_report_files, ignore_rate_card_columns):
+    def launch_workflow(rate_card_file, etof_file, mismatch_report_files):
         try:
             result_file, status_text = run_full_workflow_gradio(
                 rate_card_file=rate_card_file,
                 etof_file=etof_file,
                 mismatch_report_files=mismatch_report_files,
-                ignore_rate_card_columns=ignore_rate_card_columns
             )
             return result_file, status_text
         except Exception as e:
@@ -612,7 +588,7 @@ with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
     launch_button.click(
         launch_workflow,
         inputs=[
-            rate_card_input, etof_input, mismatch_report_input, ignore_rate_card_columns_input
+            rate_card_input, etof_input, mismatch_report_input,
         ],
         outputs=[out, status_output]
     )
