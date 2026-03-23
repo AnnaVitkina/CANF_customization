@@ -186,7 +186,7 @@ def upload_to_google_drive(
         return None
     
     # Define source folders to upload
-    source_folders = ['CANF-test-updated/partly_df', 'input', 'output']
+    source_folders = ['CANF_customization/partly_df', 'input', 'output']
     
     total_files_copied = 0
     
