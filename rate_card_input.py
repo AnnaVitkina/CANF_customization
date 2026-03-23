@@ -900,7 +900,7 @@ def save_rate_card_output(file_path, output_path=None, save_excel=True, save_jso
 
 if __name__ == "__main__":
     # Set the input file to process (change this to switch files)
-    INPUT_FILE = "Rate Card Export - RA20241217021 v.11.xlsx"
+    INPUT_FILE = "Rate Card Export - RA20241206008 v.1.xlsx"
     
     # Choose what to update: Excel, JSON, or both
     SAVE_EXCEL = False   # set False to skip writing the Excel result file
