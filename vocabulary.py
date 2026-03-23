@@ -1083,8 +1083,8 @@ if __name__ == "__main__":
     try:
         # Main function: Map and rename columns
         etof_renamed, lc_renamed, origin_renamed = map_and_rename_columns(
-            rate_card_file_path="Rate Card Export - RA20241217021 v.11.xlsx",
-            etof_file_path="etofs_MAERSK.xlsx",
+            rate_card_file_path="Rate Card Export - RA20241206008 v.1.xlsx",
+            etof_file_path="etofs_KWE Trucking.xlsx",
         )
     except Exception:
         pass  
