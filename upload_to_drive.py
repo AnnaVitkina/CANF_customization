@@ -2,8 +2,8 @@
 Upload CANF Project Files to Google Drive
 
 This script:
-1. Prompts user for Name, Shipper name, and optional comment
-2. Creates a folder named "Name Shipper dd.mm.yyyy" on Google Drive
+1. Prompts user for Name, Rate case (e.g. GAR25), and optional comment
+2. Creates a folder named "Name GAR25 dd.mm.yyyy" (name + rate case + date) on Google Drive
 3. Uploads files from partly_df, input, and output folders
 4. Saves the comment as a txt file in the created folder
 """
@@ -29,7 +29,7 @@ def get_user_input():
     Get user input for folder naming and comment.
     
     Returns:
-        tuple: (name, shipper_name, date_str, comment)
+        tuple: (name, rate_case, date_str, comment)
     """
     print("\n" + "="*60)
     print("📤 UPLOAD CANF FILES TO GOOGLE DRIVE")
@@ -42,12 +42,12 @@ def get_user_input():
         print("   ❌ Name cannot be empty. Please enter your name:")
         name = input("   Name: ").strip()
     
-    # Get Shipper name
-    print("\n2. Enter shipper name (e.g., dairb):")
-    shipper_name = input("   Shipper: ").strip()
-    while not shipper_name:
-        print("   ❌ Shipper name cannot be empty. Please enter shipper name:")
-        shipper_name = input("   Shipper: ").strip()
+    # Get Rate case (e.g. GAR25)
+    print("\n2. Enter rate case (e.g., GAR25):")
+    rate_case = input("   Rate case: ").strip()
+    while not rate_case:
+        print("   ❌ Rate case cannot be empty. Please enter rate case:")
+        rate_case = input("   Rate case: ").strip()
     
     # Auto-generate date
     date_str = datetime.now().strftime("%d.%m.%Y")
@@ -81,20 +81,20 @@ def get_user_input():
     
     comment = '\n'.join(comment_lines) if comment_lines else None
     
-    # Preview folder name
-    folder_name = f"{name} {shipper_name.capitalize()} {date_str}"
+    # Preview folder name (preserve casing for codes like GAR25)
+    folder_name = f"{name} {rate_case} {date_str}"
     print(f"\n📁 Folder will be created: {folder_name}")
     
     if comment:
         print(f"📝 Comment preview:\n   {comment[:100]}{'...' if len(comment) > 100 else ''}")
     
-    return name, shipper_name, date_str, comment
+    return name, rate_case, date_str, comment
 
 
 def upload_to_google_drive(
     google_drive_base_path: str,
     name: str = None,
-    shipper_name: str = None,
+    rate_case: str = None,
     date_str: str = None,
     comment: str = None,
     local_base_folder: str = None
@@ -106,7 +106,7 @@ def upload_to_google_drive(
         google_drive_base_path: Base path on Google Drive where folder will be created
                                (e.g., "My Drive/CANF Reports")
         name: User name for folder naming. If None, will prompt for input.
-        shipper_name: Shipper name for folder naming. If None, will prompt for input.
+        rate_case: Rate case identifier for folder naming (e.g. GAR25). If None, will prompt for input.
         date_str: Date string in dd.mm.yyyy format. If None, uses current date.
         comment: Optional comment to save as txt file.
         local_base_folder: Local folder containing partly_df, input, output. 
@@ -130,8 +130,8 @@ def upload_to_google_drive(
         drive_mount_point = ""
     
     # Get user input if not provided
-    if name is None or shipper_name is None:
-        name, shipper_name, date_str, comment = get_user_input()
+    if name is None or rate_case is None:
+        name, rate_case, date_str, comment = get_user_input()
         if name is None:
             return None
     
@@ -147,7 +147,7 @@ def upload_to_google_drive(
             local_base_folder = os.getcwd()
     
     # Create folder name
-    folder_name = f"{name} {shipper_name.capitalize()} {date_str}"
+    folder_name = f"{name} {rate_case} {date_str}"
     
     # Construct full Google Drive path
     if in_colab:
@@ -233,7 +233,7 @@ def upload_to_google_drive(
                 f.write(f"CANF Analysis Comment\n")
                 f.write(f"{'='*40}\n\n")
                 f.write(f"Name: {name}\n")
-                f.write(f"Shipper: {shipper_name}\n")
+                f.write(f"Rate case: {rate_case}\n")
                 f.write(f"Date: {date_str}\n")
                 f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
                 f.write(f"Comment:\n")
@@ -260,7 +260,7 @@ def upload_to_google_drive(
 def upload_from_colab(google_drive_folder_path: str = None):
     """
     Convenience function for Google Colab usage.
-    Prompts user for name, shipper, and comment interactively.
+    Prompts user for name, rate case, and comment interactively.
     
     Args:
         google_drive_folder_path: Path to folder on Google Drive where subfolder will be created.
@@ -270,8 +270,8 @@ def upload_from_colab(google_drive_folder_path: str = None):
         upload_from_colab()  # Uses hardcoded path
         
         # This will:
-        # 1. Prompt for Name, Shipper, Comment
-        # 2. Create folder like "Anna Vitkina Dairb 16.12.2024"
+        # 1. Prompt for Name, Rate case, Comment
+        # 2. Create folder like "Anna Vitkina GAR25 16.12.2024"
         # 3. Upload partly_df, input, output folders
         # 4. Save comment.txt
     """
@@ -283,7 +283,7 @@ def upload_from_colab(google_drive_folder_path: str = None):
 def upload_with_params(
     google_drive_folder_path: str,
     name: str,
-    shipper_name: str,
+    rate_case: str,
     comment: str = None
 ):
     """
@@ -292,21 +292,21 @@ def upload_with_params(
     Args:
         google_drive_folder_path: Path to folder on Google Drive
         name: User name (e.g., "Anna Vitkina")
-        shipper_name: Shipper name (e.g., "dairb")
+        rate_case: Rate case code (e.g., "GAR25")
         comment: Optional comment text
     
     Example:
         upload_with_params(
             google_drive_folder_path="My Drive/CANF Reports",
             name="Anna Vitkina",
-            shipper_name="dairb",
+            rate_case="GAR25",
             comment="Initial analysis for December shipments"
         )
     """
     return upload_to_google_drive(
         google_drive_base_path=google_drive_folder_path,
         name=name,
-        shipper_name=shipper_name,
+        rate_case=rate_case,
         comment=comment
     )
 
