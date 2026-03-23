@@ -286,7 +286,7 @@ def enrich_etof_with_isd_columns(df_etofs, mismatch_report_paths):
 
 if __name__ == "__main__":
     #configure_enrichment(mismatch_report_paths=["Mismatch_Report_ISD2025122700385_DHL EXP US_20260209.xlsx"])
-    etof_dataframe, etof_column_names = process_etof_file('etofs_MAERSK.xlsx')
+    etof_dataframe, etof_column_names = process_etof_file('etofs_KWE Trucking.xlsx')
     save_dataframe_to_excel(etof_dataframe, "etof_processed_apple.xlsx")
     save_dataframe_to_json(etof_dataframe, "etof_processed_apple.json")
     print(etof_dataframe.head())
