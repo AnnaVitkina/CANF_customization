@@ -620,7 +620,7 @@ if __name__ == "__main__":
     
     if in_colab:
         print("🚀 Launching Gradio interface for Google Colab...")
-        demo.launch(server_name="0.0.0.0", share=False, debug=True, show_error=True)
+        demo.launch(server_name="0.0.0.0", share=False, debug=False, show_error=True)
     else:
         print("🚀 Launching Gradio interface locally...")
         print(f"💡 Input files will be saved to: {input_dir}")
