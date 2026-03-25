@@ -576,107 +576,159 @@ def create_vocabulary_dataframe(
 
 
 def map_and_rename_columns(
-    rate_card_file_path: str,
+    rate_card_file_path: Optional[str] = None,
     etof_file_path: Optional[str] = None,
     output_txt_path: str = "column_mapping_results.txt",
     ignore_rate_card_columns: Optional[List[str]] = None,
+    filtered_rate_card_json_path: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Map rate card columns to ETOF (shipment_input result) only; rename columns and save results.
-    
+
+    Provide ``rate_card_file_path`` (Excel under input/) **or** ``filtered_rate_card_json_path``
+    (Filtered_Rate_Card_with_Conditions.json) to supply the rate card column layout.
+
     Args:
-        rate_card_file_path: Path to rate card file
-        etof_file_path: Optional path to ETOF file (processed via shipment_input)
+        rate_card_file_path: Path to rate card Excel under input/ (optional if JSON path set)
+        etof_file_path: Path to ETOF file (processed via shipment_input)
         output_txt_path: Path to save the mapping results text file
         ignore_rate_card_columns: Optional list of rate card column names to ignore
-    
+        filtered_rate_card_json_path: Path to filtered JSON (absolute or resolvable under input/)
+
     Returns:
         Tuple: (etof_dataframe_renamed, None, None) — LC and Origin are no longer used.
     """
-    # Step 1: Get rate card columns
+    if ignore_rate_card_columns is None:
+        ignore_rate_card_columns = []
+
+    # Step 1: Get rate card columns (Excel or first lane of filtered JSON)
     try:
-        print(f"\nStep 1: Processing rate card file: {rate_card_file_path}")
-        
-        # Check if file exists in input folder (process_rate_card expects files in "input" folder)
-        import os
         input_folder = "input"
-        
-        # Check if input folder exists
+
         if not os.path.exists(input_folder):
             print(f"   WARNING: '{input_folder}' folder does not exist. Creating it...")
             os.makedirs(input_folder, exist_ok=True)
-        
-        expected_path = os.path.join(input_folder, rate_card_file_path)
-        
-        # Check if file exists in input folder
-        if not os.path.exists(expected_path):
-            # Try with just the filename
-            filename = os.path.basename(rate_card_file_path)
-            alt_path = os.path.join(input_folder, filename)
-            if os.path.exists(alt_path):
-                rate_card_file_path = filename
-                print(f"   Using file: {alt_path}")
-            else:
-                error_msg = f"Rate card file not found at: {expected_path}"
-                if os.path.exists(rate_card_file_path):
-                    error_msg += f"\n   Found file at current location: {rate_card_file_path}"
-                    error_msg += f"\n   Please move it to: {expected_path}"
+
+        if filtered_rate_card_json_path:
+            print(f"\nStep 1: Rate card columns from filtered JSON: {filtered_rate_card_json_path}")
+            fj = filtered_rate_card_json_path
+            if not os.path.isfile(fj):
+                alt = os.path.join(input_folder, os.path.basename(filtered_rate_card_json_path))
+                if os.path.isfile(alt):
+                    fj = alt
                 else:
-                    error_msg += f"\n   Please ensure the file exists in the '{input_folder}' folder."
-                raise FileNotFoundError(error_msg)
-        else:
-            print(f"   Found rate card at: {expected_path}")
-        
-        rate_card_df, rate_card_columns_all, rate_card_conditions = process_rate_card(rate_card_file_path)
-        print(f"   Successfully loaded rate card: {len(rate_card_columns_all)} columns")
-        
-        # Filter out ignored columns
-        if ignore_rate_card_columns is None:
-            ignore_rate_card_columns = []
-        
-        # Remove ignored columns from rate card dataframe
-        if ignore_rate_card_columns:
-            columns_to_drop = [col for col in ignore_rate_card_columns if col in rate_card_df.columns]
-            if columns_to_drop:
-                rate_card_df = rate_card_df.drop(columns=columns_to_drop)
-        
-        # Update rate_card_columns_all to exclude ignored columns
-        rate_card_columns_all = [col for col in rate_card_columns_all if col not in ignore_rate_card_columns]
-        
-        rate_card_columns_to_map = [
-            col for col in rate_card_columns_all 
-            if not is_excluded_column(col) and col not in RATE_CARD_EXCLUDED_COLUMNS
-        ]
-        rate_card_columns = rate_card_columns_to_map
-        print(f"   Rate card columns to map: {len(rate_card_columns)}")
-        
-        # Find columns that contain business rule values - skip these from column matching
-        business_rule_columns = set()
-        try:
-            business_rules = process_business_rules(rate_card_file_path)
-            business_rules_conditions = transform_business_rules_to_conditions(business_rules)
-            business_rule_cols_info = find_business_rule_columns(rate_card_df, business_rules_conditions)
-            business_rule_columns = business_rule_cols_info.get('unique_columns', set())
-            
-            if business_rule_columns:
-                print(f"   Found {len(business_rule_columns)} columns containing business rules (will skip matching):")
-                for col in sorted(business_rule_columns):
-                    print(f"      - {col}")
-                # Remove business rule columns from rate_card_columns to skip matching
-                rate_card_columns = [col for col in rate_card_columns if col not in business_rule_columns]
-                print(f"   Remaining rate card columns for mapping: {len(rate_card_columns)}")
-        except Exception as e:
-            print(f"   Note: Could not process business rules: {e}")
+                    raise FileNotFoundError(
+                        f"Filtered rate card JSON not found at {filtered_rate_card_json_path} or {alt}"
+                    )
+            with open(fj, "r", encoding="utf-8") as _jf:
+                _jdata = json.load(_jf)
+            lanes = _jdata.get("rate_card_data") or []
+            if not lanes:
+                print("   ERROR: 'rate_card_data' is empty in JSON.")
+                return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+            first_lane = lanes[0]
+            rate_card_columns_all = [k for k in first_lane.keys() if k is not None]
+            rate_card_columns_all = [
+                col for col in rate_card_columns_all if col not in ignore_rate_card_columns
+            ]
+            rate_card_columns = [
+                col
+                for col in rate_card_columns_all
+                if not is_excluded_column(col) and col not in RATE_CARD_EXCLUDED_COLUMNS
+            ]
+            print(
+                f"   Loaded {len(rate_card_columns_all)} columns from first lane; "
+                f"{len(rate_card_columns)} to map"
+            )
             business_rule_columns = set()
-        
-        # Add required geographic columns to the standard columns for mapping
-        geo_columns = get_required_geo_columns()
-        for geo_col in geo_columns:
-            if geo_col not in rate_card_columns:
-                rate_card_columns.append(geo_col)
-        print(f"   Added geographic columns for mapping: {geo_columns}")
-        print(f"   Total standard columns for mapping: {len(rate_card_columns)}")
-            
+            geo_columns = get_required_geo_columns()
+            for geo_col in geo_columns:
+                if geo_col not in rate_card_columns:
+                    rate_card_columns.append(geo_col)
+            print(f"   Added geographic columns for mapping: {geo_columns}")
+            print(f"   Total standard columns for mapping: {len(rate_card_columns)}")
+
+        elif rate_card_file_path:
+            print(f"\nStep 1: Processing rate card file: {rate_card_file_path}")
+
+            expected_path = os.path.join(input_folder, rate_card_file_path)
+
+            if not os.path.exists(expected_path):
+                filename = os.path.basename(rate_card_file_path)
+                alt_path = os.path.join(input_folder, filename)
+                if os.path.exists(alt_path):
+                    rate_card_file_path = filename
+                    print(f"   Using file: {alt_path}")
+                else:
+                    error_msg = f"Rate card file not found at: {expected_path}"
+                    if os.path.exists(rate_card_file_path):
+                        error_msg += f"\n   Found file at current location: {rate_card_file_path}"
+                        error_msg += f"\n   Please move it to: {expected_path}"
+                    else:
+                        error_msg += f"\n   Please ensure the file exists in the '{input_folder}' folder."
+                    raise FileNotFoundError(error_msg)
+            else:
+                print(f"   Found rate card at: {expected_path}")
+
+            rate_card_df, rate_card_columns_all, rate_card_conditions = process_rate_card(
+                rate_card_file_path
+            )
+            print(f"   Successfully loaded rate card: {len(rate_card_columns_all)} columns")
+
+            if ignore_rate_card_columns:
+                columns_to_drop = [col for col in ignore_rate_card_columns if col in rate_card_df.columns]
+                if columns_to_drop:
+                    rate_card_df = rate_card_df.drop(columns=columns_to_drop)
+
+            rate_card_columns_all = [
+                col for col in rate_card_columns_all if col not in ignore_rate_card_columns
+            ]
+
+            rate_card_columns_to_map = [
+                col
+                for col in rate_card_columns_all
+                if not is_excluded_column(col) and col not in RATE_CARD_EXCLUDED_COLUMNS
+            ]
+            rate_card_columns = rate_card_columns_to_map
+            print(f"   Rate card columns to map: {len(rate_card_columns)}")
+
+            business_rule_columns = set()
+            try:
+                business_rules = process_business_rules(rate_card_file_path)
+                business_rules_conditions = transform_business_rules_to_conditions(business_rules)
+                business_rule_cols_info = find_business_rule_columns(
+                    rate_card_df, business_rules_conditions
+                )
+                business_rule_columns = business_rule_cols_info.get("unique_columns", set())
+
+                if business_rule_columns:
+                    print(
+                        f"   Found {len(business_rule_columns)} columns containing business rules "
+                        f"(will skip matching):"
+                    )
+                    for col in sorted(business_rule_columns):
+                        print(f"      - {col}")
+                    rate_card_columns = [
+                        col for col in rate_card_columns if col not in business_rule_columns
+                    ]
+                    print(f"   Remaining rate card columns for mapping: {len(rate_card_columns)}")
+            except Exception as e:
+                print(f"   Note: Could not process business rules: {e}")
+                business_rule_columns = set()
+
+            geo_columns = get_required_geo_columns()
+            for geo_col in geo_columns:
+                if geo_col not in rate_card_columns:
+                    rate_card_columns.append(geo_col)
+            print(f"   Added geographic columns for mapping: {geo_columns}")
+            print(f"   Total standard columns for mapping: {len(rate_card_columns)}")
+
+        else:
+            print(
+                "   ERROR: Provide rate_card_file_path (Excel) or filtered_rate_card_json_path (JSON)."
+            )
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
     except Exception as e:
         print(f"   ERROR processing rate card: {e}")
         import traceback
