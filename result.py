@@ -167,17 +167,19 @@ def run_full_workflow_gradio(
     Main workflow for use in Gradio.
     Accepts uploaded files and user input; returns downloadable files and status messages.
 
-    Default when filtered JSON is omitted: Excel rate card → vocabulary → save_rate_card_output
-    builds Filtered_Rate_Card_with_Conditions.json (unchanged from before).
-    Optionally upload that JSON to skip the slow Excel→JSON rebuild; Excel is still required
-    for vocabulary and rate card processing.
+    You must provide **ETOF** plus **at least one of**: Rate Card Excel, or Filtered Rate Card JSON.
+
+    - **Excel only (or Excel + optional JSON):** same as before — vocabulary from Excel; JSON upload
+      only skips rebuilding `Filtered_Rate_Card_with_Conditions.json` when provided.
+    - **JSON only:** vocabulary column names come from the first lane of the filtered JSON; Excel
+      processing is skipped.
 
     Workflow:
     1. Save uploaded files to input/ folder
     2. Process ETOF file (shipment_input.py)
-    3. Process Rate Card file (rate_card_input.py)
-    4. Run vocabulary mapping (vocabulary.py) -> vocabulary_mapping.json; then default JSON
-       build from Excel, or copy uploaded filtered JSON if provided
+    3. Process Rate Card file (rate_card_input.py) if Excel was uploaded
+    4. Run vocabulary mapping (vocabulary.py) from Excel and/or filtered JSON -> vocabulary_mapping.json;
+       then build filtered JSON from Excel or copy uploaded JSON
     5. Run matching (matching.py) -> creates Matched_Shipments_with.json
     6. Run formatting (formatting.py) -> creates Matched_Shipments_formatted.json and .xlsx
     7. Save final results to output/ folder
@@ -234,11 +236,14 @@ def run_full_workflow_gradio(
         log_status(error_msg, "error")
         return None, error_msg
     
-    if not rate_card_path:
-        error_msg = "❌ Error: Rate Card File is required."
+    if not rate_card_path and not filtered_rc_json_upload:
+        error_msg = (
+            "❌ Error: Provide a Rate Card Excel (.xlsx) and/or a Filtered Rate Card JSON "
+            "(at least one of the two)."
+        )
         log_status(error_msg, "error")
         return None, error_msg
-    
+
     log_status("✅ Validation passed. Starting workflow...", "info")
     
     # Resolve project root (folder with shipment_input.py) so imports and folders stay consistent
@@ -349,20 +354,32 @@ def run_full_workflow_gradio(
             log_status(traceback.format_exc(), "error")
             return None, "\n".join(status_messages)
         
-        # --- STEP 3: Process Rate Card File (rate_card_input.py) ---
-        try:
-            from rate_card_input import process_rate_card, process_business_rules
-            if rate_card_filename:
+        # --- STEP 3: Process Rate Card File (rate_card_input.py) — skip if JSON-only mode ---
+        if rate_card_filename:
+            try:
+                from rate_card_input import process_rate_card
+
                 log_status(f"📄 Processing Rate Card file: {rate_card_filename}", "info")
-                # process_rate_card prepends "input/" internally; pass filename only
-                rate_card_df, rate_card_columns, rate_card_conditions = process_rate_card(rate_card_filename)
-                log_status(f"✓ Rate Card processed: {rate_card_df.shape[0]} rows, {len(rate_card_columns)} columns, {len(rate_card_conditions)} conditions", "info")
-        except Exception as e:
-            error_msg = f"❌ Error processing Rate Card file: {str(e)}"
-            log_status(error_msg, "error")
-            import traceback
-            log_status(traceback.format_exc(), "error")
-            return None, "\n".join(status_messages)
+                rate_card_df, rate_card_columns, rate_card_conditions = process_rate_card(
+                    rate_card_filename
+                )
+                log_status(
+                    f"✓ Rate Card processed: {rate_card_df.shape[0]} rows, "
+                    f"{len(rate_card_columns)} columns, {len(rate_card_conditions)} conditions",
+                    "info",
+                )
+            except Exception as e:
+                error_msg = f"❌ Error processing Rate Card file: {str(e)}"
+                log_status(error_msg, "error")
+                import traceback
+
+                log_status(traceback.format_exc(), "error")
+                return None, "\n".join(status_messages)
+        elif filtered_rate_card_json_filename:
+            log_status(
+                "ℹ️ Skipping Excel rate card processing (using Filtered Rate Card JSON only).",
+                "info",
+            )
         
         # --- STEP 4: Vocabulary Mapping (vocabulary.py) ---
         try:
@@ -371,14 +388,25 @@ def run_full_workflow_gradio(
             log_status(f"🔤 Processing Vocabulary Mapping...", "info")
             log_status(f"   This step maps rate card columns to ETOF columns and creates vocabulary_mapping.json", "info")
             
-            # vocabulary.map_and_rename_columns joins with input/; pass filenames only
-            vocab_result = map_and_rename_columns(
-                rate_card_file_path=rate_card_filename,
-                etof_file_path=etof_filename,
-                # vocabulary.py already writes under partly_df/; pass basename only
-                output_txt_path="column_mapping_results.txt",
-                ignore_rate_card_columns=None,
-            )
+            # vocabulary: Excel **or** filtered JSON defines rate card column names
+            if not rate_card_filename and filtered_rate_card_json_filename:
+                vocab_result = map_and_rename_columns(
+                    rate_card_file_path=None,
+                    etof_file_path=etof_filename,
+                    output_txt_path="column_mapping_results.txt",
+                    ignore_rate_card_columns=None,
+                    filtered_rate_card_json_path=os.path.join(
+                        input_dir, filtered_rate_card_json_filename
+                    ),
+                )
+            else:
+                vocab_result = map_and_rename_columns(
+                    rate_card_file_path=rate_card_filename,
+                    etof_file_path=etof_filename,
+                    output_txt_path="column_mapping_results.txt",
+                    ignore_rate_card_columns=None,
+                    filtered_rate_card_json_path=None,
+                )
             
             if vocab_result is None:
                 error_msg = "❌ Error: Vocabulary mapping returned None"
@@ -569,14 +597,13 @@ with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
         Optional: `os.environ["CANF_PROJECT_ROOT"] = "/content/CANF_customization"` before `exec`.
         
         ### Step 1: Upload Required Files
-        - **Rate Card File** (Required): Excel file containing rate card data (.xlsx)
         - **ETOF File** (Required): Excel file containing ETOF shipment data (.xlsx)
-        
-        **Optional addition (default unchanged):** You may also upload an existing
-        `Filtered_Rate_Card_with_Conditions.json` (e.g. from `partly_df/` after a prior run).
-        If you do, the app still uses the Excel rate card for vocabulary as usual, but **skips**
-        rebuilding the large JSON from Excel and uses your file for matching instead.
-        If you leave this empty, the original flow still builds that JSON from the Excel file.
+        - **Rate Card File** (.xlsx): Required **unless** you upload only the filtered JSON below.
+          If both Excel and JSON are uploaded, Excel drives vocabulary; JSON can still replace the
+          built `Filtered_Rate_Card_with_Conditions.json` for matching (skips slow Excel→JSON step).
+        - **Filtered Rate Card JSON** (`Filtered_Rate_Card_with_Conditions.json`): Use **instead of**
+          the Excel rate card if you have no .xlsx (JSON-only mode: vocabulary column names are taken
+          from the first lane in the file). Or upload **with** Excel to skip rebuilding that JSON.
         
         ### Step 2: Upload Optional Files
         - **Mismatch Report File(s)** (Optional): Excel file(s) for ETOF enrichment
@@ -615,13 +642,15 @@ with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
     gr.Markdown("---")
     gr.Markdown("### 📁 File Upload")
     gr.Markdown(
-        "**Required:** Rate Card (.xlsx) and ETOF (.xlsx)  |  **Optional:** "
-        "`Filtered_Rate_Card_with_Conditions.json` (skips Excel→JSON rebuild; default path unchanged if empty)  |  "
-        "**Optional:** Mismatch Report(s)"
+        "**Required:** ETOF (.xlsx). **Also required:** Rate Card (.xlsx) **or** Filtered Rate Card JSON "
+        "(or both). **Optional:** Mismatch Report(s)."
     )
     
     with gr.Row():
-        rate_card_input = gr.File(label="Rate Card File (.xlsx) *Required", file_types=[".xlsx", ".xls"])
+        rate_card_input = gr.File(
+            label="Rate Card File (.xlsx) — optional if JSON below is uploaded",
+            file_types=[".xlsx", ".xls"],
+        )
         etof_input = gr.File(label="ETOF File (.xlsx) *Required", file_types=[".xlsx", ".xls"])
 
     filtered_rate_card_json_input = gr.File(
@@ -629,8 +658,8 @@ with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
         file_types=[".json"],
     )
     gr.Markdown(
-        "*Leave empty:* JSON is built from the Excel rate card (default). "
-        "*Upload:* reuse a prior `Filtered_Rate_Card_with_Conditions.json` to skip the slow Excel→JSON step."
+        "*JSON only:* upload this instead of a Rate Card .xlsx (vocabulary uses the first lane’s columns). "
+        "*With Excel:* leave empty to build JSON from Excel, or upload to skip that slow step."
     )
 
     with gr.Row():
