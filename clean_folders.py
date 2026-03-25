@@ -19,11 +19,37 @@ from typing import Iterable, List, Optional
 
 _FOLDER_NAMES = ("input", "output", "partly_df")
 
+# Typical Colab clone path (checked before cwd so kernel -f in argv does not matter)
+_COLAB_DEFAULT = Path("/content/CANF_customization")
+
+
+def _resolved_dir_if_valid(path_str: str) -> Optional[Path]:
+    """Reject empty strings, CLI flags (-f), and non-directories."""
+    s = path_str.strip()
+    if not s or s.startswith("-"):
+        return None
+    try:
+        p = Path(s).expanduser().resolve()
+    except OSError:
+        return None
+    return p if p.is_dir() else None
+
+
+def _env_project_root() -> Optional[Path]:
+    env = os.environ.get("CANF_PROJECT_ROOT", "").strip()
+    return _resolved_dir_if_valid(env) if env else None
+
+
+def _colab_project_root() -> Optional[Path]:
+    if _COLAB_DEFAULT.is_dir() and (_COLAB_DEFAULT / "shipment_input.py").is_file():
+        return _COLAB_DEFAULT
+    return None
+
 
 def _project_root() -> Path:
-    env = os.environ.get("CANF_PROJECT_ROOT", "").strip()
-    if env:
-        return Path(env).expanduser().resolve()
+    for candidate in (_env_project_root(), _colab_project_root()):
+        if candidate is not None:
+            return candidate
     try:
         return Path(__file__).resolve().parent
     except NameError:
@@ -89,18 +115,33 @@ def clean_canf_folders(project_root: Optional[os.PathLike] = None) -> Path:
     return root
 
 
+def _first_cli_project_root(argv: List[str]) -> Optional[Path]:
+    """
+    Colab/Jupyter often inject kernel flags into sys.argv (e.g. '-f'); never treat those as paths.
+    """
+    for a in argv:
+        if a in ("-h", "--help"):
+            return None
+        if a.startswith("-"):
+            continue
+        p = _resolved_dir_if_valid(a)
+        if p is not None:
+            return p
+    return None
+
+
 def main(argv: Optional[Iterable[str]] = None) -> int:
     argv = list(argv) if argv is not None else sys.argv[1:]
-    root = None
-    if argv and argv[0] in ("-h", "--help"):
+    if any(a in ("-h", "--help") for a in argv):
         print(__doc__)
         print("Usage: python clean_folders.py [PROJECT_ROOT]")
         return 0
-    if argv:
-        root = argv[0]
-    clean_canf_folders(project_root=root)
+    cli_root = _first_cli_project_root(argv)
+    clean_canf_folders(project_root=cli_root)
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    code = main()
+    if code:
+        raise SystemExit(code)
