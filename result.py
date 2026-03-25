@@ -627,9 +627,12 @@ with gr.Blocks(title="CANF Analyzer", theme=gr.themes.Soft()) as demo:
     filtered_rate_card_json_input = gr.File(
         label="Filtered Rate Card JSON *Optional (Filtered_Rate_Card_with_Conditions.json)",
         file_types=[".json"],
-        info="Leave empty to keep the default: build this file from the Excel rate card. Upload to reuse a prior JSON and skip that slow step.",
     )
-    
+    gr.Markdown(
+        "*Leave empty:* JSON is built from the Excel rate card (default). "
+        "*Upload:* reuse a prior `Filtered_Rate_Card_with_Conditions.json` to skip the slow Excel→JSON step."
+    )
+
     with gr.Row():
         mismatch_report_input = gr.File(
             label="Mismatch Report File(s) (.xlsx) *Optional - for ETOF enrichment",
