@@ -49,6 +49,10 @@ def _parse_differences_list(differences_list):
         if "City/Postal" in line:
             current_section = "postal"
             continue
+        if "Carrier correct" in line:
+            # Same geo lines as City/Postal; CUST_CITY_ISD matches destination BR city (matching.py)
+            current_section = "postal"
+            continue
         if "Country differs" in line:
             current_section = "country"
             continue
@@ -56,7 +60,7 @@ def _parse_differences_list(differences_list):
             # Fallback: if no content match, use priority number (but less reliable)
             if "Service" in line:
                 current_section = "service"
-            elif "City/Postal" in line or "Airport" in line:
+            elif "Carrier correct" in line or "City/Postal" in line or "Airport" in line:
                 current_section = "postal"
             elif "Country" in line:
                 current_section = "country"
