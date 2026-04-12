@@ -17,6 +17,19 @@ from datetime import datetime
 
 import pandas as pd
 
+try:
+    from rate_card_input import normalize_condition_rule_text
+except ImportError:
+    def normalize_condition_rule_text(condition_text):
+        if condition_text is None:
+            return condition_text
+        s = str(condition_text)
+        s = re.sub(r"(?i)_x000d_", "\n", s)
+        s = re.sub(r"(?i)_x000a_", "\n", s)
+        s = s.replace("\r\n", "\n").replace("\r", "\n")
+        s = re.sub(r"\n{3,}", "\n\n", s)
+        return s
+
 # Columns used only for date-range filtering; excluded from value comparison
 VALIDITY_DATE_COLUMNS = ("Valid to", "Valid from")
 
@@ -151,6 +164,23 @@ def _lane_valid_for_shipment_date(lane, ship_date_str):
     return True
 
 
+def _shipment_value_for_rate_card_column(shipment, rate_card_column):
+    """
+    ETOF value for comparison. 'Carrier Name' uses CARRIER_NAME (same semantic as 'CARRIER' in condition rules).
+    """
+    if not shipment or not rate_card_column:
+        return None
+    if str(rate_card_column).strip() == "Carrier Name":
+        v = shipment.get("CARRIER_NAME")
+        if v is None or (isinstance(v, float) and pd.isna(v)) or str(v).strip() == "":
+            v = shipment.get("Carrier Name")
+        if v is None or (isinstance(v, float) and pd.isna(v)) or str(v).strip() == "":
+            v = shipment.get("Carrier")
+        if v is not None and str(v).strip() != "":
+            return v
+    return shipment.get(rate_card_column)
+
+
 def _parse_condition_rule_for_rate_card_value(condition_rule_text, rate_card_value):
     """
     Find the line in condition_rule_text that applies to rate_card_value (e.g. 'Shanghai', 'Reefer').
@@ -161,6 +191,7 @@ def _parse_condition_rule_for_rate_card_value(condition_rule_text, rate_card_val
     """
     if not condition_rule_text or not rate_card_value:
         return None, None
+    condition_rule_text = normalize_condition_rule_text(condition_rule_text)
     rc_val_norm = _normalize_for_compare(rate_card_value)
     if not rc_val_norm:
         return None, None
@@ -178,6 +209,7 @@ def _parse_condition_rule_for_rate_card_value(condition_rule_text, rate_card_val
         if label_norm != rc_norm:
             continue
         rule_part = rule_part.strip().lower()
+        rule_part = re.sub(r"^carrier\s+", "", rule_part)
         if "does not equal" in rule_part or "does not equal to" in rule_part:
             mode = False
             part = rule_part.replace("does not equal to", "").replace("does not equal", "").strip()
@@ -193,7 +225,7 @@ def _parse_condition_rule_for_rate_card_value(condition_rule_text, rate_card_val
             part = rule_part.split("equals", 1)[1].strip()
         else:
             continue
-        part = part.split(" in ")[0].strip() if " in " in part else part
+        # Do not split on " in " — carrier names like "SCHENKER BNAFIN IN BLR" contain " IN ".
         codes = [c.strip().lower() for c in part.split(",") if c.strip()]
         if codes:
             return codes, mode
@@ -338,6 +370,121 @@ def _is_country_column(col):
     return "country" in col.lower()
 
 
+_BR_GEO_DIFF = re.compile(
+    r"(.+?)\s*\(Business Rule\)\s*\"([^\"]+)\"\s*->\s*shipment\s+(origin|destination)\s+(postal|country)\s+\'[^\']*\'\s*differs",
+    re.IGNORECASE,
+)
+
+
+def _isd_keys_for_br_column(column_label, side, field):
+    """Which shipment *_ISD keys can carry the carrier truth for this business-rule geo differ."""
+    cl = (column_label or "").lower()
+    side = (side or "").lower()
+    field = (field or "").lower()
+    if side == "destination":
+        if "airport" in cl:
+            return ["CUST_AIRPORT_ISD"]
+        if "seaport" in cl:
+            return ["CUST_SEAPORT_ISD"]
+        if field == "postal":
+            return ["CUST_CITY_ISD", "CUST_POST_ISD"]
+        return ["CUST_COUNTRY_ISD"]
+    if "airport" in cl:
+        return ["SHIP_AIRPORT_ISD"]
+    if "seaport" in cl:
+        return ["SHIP_SEAPORT_ISD"]
+    if field == "postal":
+        return ["SHIP_CITY_ISD", "SHIP_POST_ISD"]
+    return ["SHIP_COUNTRY_ISD"]
+
+
+def _shipment_non_empty_isd(shipment, key):
+    if not shipment or key not in shipment:
+        return None
+    v = shipment.get(key)
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    s = str(v).strip()
+    if not s or s.lower() in ("nan", "none", ""):
+        return None
+    return s
+
+
+def _carrier_isd_matches_differ(diff_str, shipment, rate_card_to_isd_key=None):
+    """
+    True when some shipment field ending in _ISD supports the carrier-side value for this differ
+    (same kind of change: BR rule name, conditional label, or plain rate card value vs mapped ISD).
+    """
+    if not shipment:
+        return False
+    s = diff_str or ""
+    col = _column_from_diff(s)
+
+    m = _BR_GEO_DIFF.search(s)
+    if m:
+        column_label = m.group(1).strip()
+        rule_name = m.group(2).strip()
+        side = m.group(3).lower()
+        field = m.group(4).lower()
+        rn = _normalize_for_compare(rule_name)
+        if not rn:
+            return False
+        for isd_key in _isd_keys_for_br_column(column_label, side, field):
+            isd_val = _shipment_non_empty_isd(shipment, isd_key)
+            if not isd_val:
+                continue
+            if _normalize_for_compare(isd_val) == rn:
+                return True
+            if field == "postal":
+                a = re.sub(r"[^a-z0-9]", "", isd_val.lower())
+                b = re.sub(r"[^a-z0-9]", "", rule_name.lower())
+                if len(a) >= 4 and (a in b or b in a):
+                    return True
+        return False
+
+    if "(Conditional)" in s and col and rate_card_to_isd_key:
+        c = re.search(r"\(Conditional\)\s*\"([^\"]+)\"", s)
+        if c:
+            rule_val = c.group(1).strip()
+            isd_key = rate_card_to_isd_key.get(col)
+            if isd_key:
+                isd_val = _shipment_non_empty_isd(shipment, isd_key)
+                if isd_val and _normalize_for_compare(isd_val) == _normalize_for_compare(rule_val):
+                    return True
+
+    plain = re.search(r"rate card\s+'([^']*)'\s*->\s*shipment\s+'([^']*)'", s, re.IGNORECASE)
+    if plain and rate_card_to_isd_key and col:
+        rc_val = plain.group(1)
+        isd_key = rate_card_to_isd_key.get(col)
+        if isd_key:
+            isd_val = _shipment_non_empty_isd(shipment, isd_key)
+            if isd_val and _normalize_for_compare(rc_val) == _normalize_for_compare(isd_val):
+                return True
+
+    return False
+
+
+def _shipment_row_display_priority(diff_str, shipment, rate_card_to_isd_key=None):
+    """
+    Single integer 0..6 for ordering differences_list sections and sorting lines.
+    Tier 2 = Carrier correct data when a relevant *_ISD matches the carrier value for this differ.
+    """
+    p = _display_priority(diff_str)
+    if p == 5:
+        return 6  # SPECIAL/EXP_DUTY
+    if _carrier_isd_matches_differ(diff_str, shipment, rate_card_to_isd_key):
+        return 2  # Carrier correct data
+    if p == 0:
+        return 0  # Service
+    if p == 1:
+        return 1  # Airport/Seaport
+    if p == 2:
+        return 3  # City/Postal code
+    if p == 3:
+        return 4  # Country
+    return 5  # Other
+
+
 def _display_priority(diff_str):
     """
     Return sort key for display order (only the order matters; section numbers are assigned dynamically):
@@ -346,6 +493,8 @@ def _display_priority(diff_str):
     """
     col = _column_from_diff(diff_str)
     d = (diff_str or "").lower()
+    if "not covered by the rate card" in d:
+        return 3
     # Service differ with rate card 'SPECIAL' or 'EXP_DUTY' is always last priority
     if col and "service" in col.lower():
         if ("'special'" in d or "rate card 'special'" in d or "rate card \"special\"" in d or
@@ -407,6 +556,7 @@ def _priority_key(shipment, lane, diffs, rate_card_to_isd_key):
     P5: country differ
     """
     has_isd = False
+    has_carrier_isd = False
     has_service_2part = False
     has_service_other = False
     has_geo = False
@@ -414,13 +564,15 @@ def _priority_key(shipment, lane, diffs, rate_card_to_isd_key):
     for d in diffs:
         col = _column_from_diff(d)
         pri = _display_priority(d)  # 0=service, 1=airport, 2=city/postal, 3=country, 4=other
+        if _carrier_isd_matches_differ(d, shipment, rate_card_to_isd_key):
+            has_carrier_isd = True
         if pri == 3:
             has_country = True
         elif pri in (1, 2):
             has_geo = True
         elif pri == 0 and col:
             rc_val = lane.get(col)
-            ship_val = shipment.get(col)
+            ship_val = _shipment_value_for_rate_card_column(shipment, col)
             if _service_first_two_match(ship_val, rc_val):
                 has_service_2part = True
             else:
@@ -431,8 +583,9 @@ def _priority_key(shipment, lane, diffs, rate_card_to_isd_key):
             if isd_key and shipment.get(isd_key) is not None and str(shipment.get(isd_key)).strip():
                 if _normalize_for_compare(lane.get(col)) == _normalize_for_compare(shipment.get(isd_key)):
                     has_isd = True
-    # Sort: ISD first, then service 2-part, then service other, then geo, then country last
+    # Sort: carrier-relevant *_ISD first, then column ISD, then service 2-part, etc.
     return (
+        0 if has_carrier_isd else 1,
         0 if has_isd else 1,
         0 if has_service_2part else 1,
         0 if has_service_other else 1,
@@ -455,6 +608,47 @@ def _isd_match_columns(shipment, lane, diffs, rate_card_to_isd_key):
     return out
 
 
+_BR_ORIGIN_COUNTRY_DIFFER = re.compile(
+    r".*\(Business Rule\).*->\s*shipment\s+origin\s+country\s+\'([^\']*)\'\s+differs",
+    re.IGNORECASE,
+)
+_BR_DESTINATION_COUNTRY_DIFFER = re.compile(
+    r".*\(Business Rule\).*->\s*shipment\s+destination\s+country\s+\'([^\']*)\'\s+differs",
+    re.IGNORECASE,
+)
+
+
+def _combine_origin_dest_country_coverage_message(differences, shipment):
+    """
+    When a lane has exactly one BR differ on origin country and one on destination country,
+    replace both with a single line: '{Origin}-{Destination} is not covered by the rate card'
+    using SHIP_COUNTRY/CUST_COUNTRY (or Origin Country / Destination Country).
+    """
+    if not differences or len(differences) < 2:
+        return differences
+    orig_ix = [i for i, d in enumerate(differences) if d and _BR_ORIGIN_COUNTRY_DIFFER.search(d)]
+    dest_ix = [i for i, d in enumerate(differences) if d and _BR_DESTINATION_COUNTRY_DIFFER.search(d)]
+    if len(orig_ix) != 1 or len(dest_ix) != 1:
+        return differences
+    oi, di = orig_ix[0], dest_ix[0]
+    if oi == di:
+        return differences
+    oc = shipment.get("SHIP_COUNTRY") or shipment.get("Origin Country")
+    dc = shipment.get("CUST_COUNTRY") or shipment.get("Destination Country")
+    if oc is None or (isinstance(oc, float) and pd.isna(oc)):
+        oc = "?"
+    else:
+        oc = str(oc).strip() or "?"
+    if dc is None or (isinstance(dc, float) and pd.isna(dc)):
+        dc = "?"
+    else:
+        dc = str(dc).strip() or "?"
+    summary = f"{oc}-{dc} is not covered by the rate card"
+    out = [d for i, d in enumerate(differences) if i not in (oi, di)]
+    out.insert(min(oi, di), summary)
+    return out
+
+
 def compare_shipment_to_lane(shipment, lane, conditions_list, business_rules_list, value_columns):
     """Compare one shipment to one lane. Returns: (diff_count, list of difference strings)."""
     differences = []
@@ -465,7 +659,7 @@ def compare_shipment_to_lane(shipment, lane, conditions_list, business_rules_lis
             continue
         has_business = lane.get(col + " - Has Business Rule") == "Yes"
         has_conditional = lane.get(col + " - Has conditional Rule") == "Yes"
-        ship_val = shipment.get(col)
+        ship_val = _shipment_value_for_rate_card_column(shipment, col)
 
         if has_conditional:
             match, msg = _check_conditional_rule(ship_val, rc_val, col, conditions_list)
@@ -482,17 +676,61 @@ def compare_shipment_to_lane(shipment, lane, conditions_list, business_rules_lis
             continue
         if sn != rn:
             differences.append(f"{col}: rate card '{rc_val}' -> shipment '{ship_val}' differs")
+    differences = _combine_origin_dest_country_coverage_message(differences, shipment)
     return len(differences), differences
+
+
+def _merge_isd_from_processed_etof_json(etof_data, json_path):
+    """
+    vocabulary etof_data often has no *_ISD columns (those come from mismatch enrichment in
+    etof_processed_*.json). Merge those keys per ETOF so carrier-priority and ISD annotations work.
+    Returns number of etof rows updated.
+    """
+    if not json_path or not etof_data or not os.path.isfile(json_path):
+        return 0
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return 0
+    rows = payload if isinstance(payload, list) else []
+    by_etof = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        e = r.get("ETOF")
+        if e is None:
+            continue
+        isd_only = {k: v for k, v in r.items() if isinstance(k, str) and k.endswith("_ISD")}
+        if isd_only:
+            by_etof[str(e)] = isd_only
+    n = 0
+    for row in etof_data:
+        if not isinstance(row, dict):
+            continue
+        e = row.get("ETOF")
+        if e is None:
+            continue
+        extra = by_etof.get(str(e))
+        if extra:
+            row.update(extra)
+            n += 1
+    return n
 
 
 def run_matching_json_only(
     vocabulary_json_path=None,
     rate_card_json_path=None,
     output_dir=None,
+    etof_processed_json_path=None,
 ):
     """
     Load vocabulary_mapping.json and Filtered_Rate_Card_with_Conditions.json;
     compare each shipment to every lane; pick best lane(s); write JSON then Excel from that JSON.
+
+    If etof_processed_json_path is set to a JSON list (e.g. etof_processed_apple.json), *_ISD fields
+    are merged into each etof row by ETOF before matching (vocabulary JSON often omits them).
+
     Returns: (path_to_xlsx, path_to_json) or (None, None).
     """
     try:
@@ -517,6 +755,20 @@ def run_matching_json_only(
     if not etof_data:
         print("[ERROR] No etof_data in vocabulary_mapping.json")
         return None, None
+
+    # Merge carrier *_ISD columns from processed ETOF (not stored in vocabulary_mapping by default)
+    if etof_processed_json_path is False:
+        resolved_isd_path = None
+    elif etof_processed_json_path:
+        resolved_isd_path = etof_processed_json_path if os.path.isfile(etof_processed_json_path) else None
+        if etof_processed_json_path and not resolved_isd_path:
+            print(f"[WARN] etof_processed_json_path not found, skipping ISD merge: {etof_processed_json_path}")
+    else:
+        candidate = os.path.join(partly_df, "etof_processed_apple.json")
+        resolved_isd_path = candidate if os.path.isfile(candidate) else None
+    n_isd = _merge_isd_from_processed_etof_json(etof_data, resolved_isd_path)
+    if n_isd and resolved_isd_path:
+        print(f"Merged *_ISD fields from {resolved_isd_path} into {n_isd} etof row(s).")
 
     with open(rate_card_json_path, "r", encoding="utf-8") as f:
         rate_card = json.load(f)
@@ -591,17 +843,18 @@ def run_matching_json_only(
             _priority_categories = {
                 0: "Service differs",
                 1: "Airport/Seaport differs",
-                2: "City/Postal code differs",
-                3: "Country differs",
-                4: "Other differs",
-                5: "Service (SPECIAL/EXP_DUTY) differs",  # always last
+                2: "Carrier correct data",  # relevant *_ISD matches carrier value for this differ (vocabulary column ISD mapping)
+                3: "City/Postal code differs",
+                4: "Country differs",
+                5: "Other differs",
+                6: "Service (SPECIAL/EXP_DUTY) differs",  # always last
             }
-            # Sort lanes by display priority of their differ(s): service first, then airport/seaport, then city/postal, then country, then other
+            # Sort lanes by display priority of their differ(s): service first, then airport/seaport, then carrier ISD city, etc.
             def _lane_display_priority(item):
                 lane_num, _dc, diffs, _lane = item
                 if not diffs:
                     return 99
-                return min(_display_priority(d) for d in diffs)
+                return min(_shipment_row_display_priority(d, shipment, rate_card_to_isd_key) for d in diffs)
             lanes_for_display = sorted(sorted_best, key=_lane_display_priority)
             # Collect (priority, lane_num, "Lane N: message") for all differs, then group by priority with section headers
             all_items = []
@@ -612,10 +865,10 @@ def run_matching_json_only(
                     if col in isd_match_cols:
                         return d + " (matches the Carrier data (ISD))"
                     return d
-                ordered_diffs = sorted(diffs, key=_display_priority)
+                ordered_diffs = sorted(diffs, key=lambda d: _shipment_row_display_priority(d, shipment, rate_card_to_isd_key))
                 annotated = [add_isd_comment(d) for d in ordered_diffs]
                 for d in annotated:
-                    pri = _display_priority(d)
+                    pri = _shipment_row_display_priority(d, shipment, rate_card_to_isd_key)
                     all_items.append((pri, str(lane_num), f"Lane {lane_num}: {d}"))
             # Sort by priority, then by lane number; emit section header when priority changes (Priority 1, 2, 3... by order of appearance)
             all_items.sort(key=lambda x: (x[0], x[1]))
@@ -669,12 +922,18 @@ def run_matching_json_only(
     return out_xlsx, out_json
 
 
-def run_matching_from_json(rate_card_json_path=None, vocabulary_json_path=None, output_dir=None):
+def run_matching_from_json(
+    rate_card_json_path=None,
+    vocabulary_json_path=None,
+    output_dir=None,
+    etof_processed_json_path=None,
+):
     """Convenience wrapper: run JSON-only matching and return (xlsx_path, json_path)."""
     return run_matching_json_only(
         vocabulary_json_path=vocabulary_json_path,
         rate_card_json_path=rate_card_json_path,
         output_dir=output_dir,
+        etof_processed_json_path=etof_processed_json_path,
     )
 
 
