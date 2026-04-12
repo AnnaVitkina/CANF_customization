@@ -1,8 +1,10 @@
 import json
 import math
-import pandas as pd
-import openpyxl
 import os
+import re
+
+import openpyxl
+import pandas as pd
 
 
 def process_rate_card(file_path):
@@ -624,6 +626,23 @@ def get_required_geo_columns():
     ]
 
 
+def normalize_condition_rule_text(condition_text):
+    """
+    Normalize Excel-exported condition strings so rules parse correctly:
+    - Replace _x000D_ / _x000A_ (XML/Excel line-break escapes) with newlines
+    - Unify \\r\\n / \\r to \\n
+    Numbered sub-rules (e.g. '2. not EMEA carriers: ...') must be on separate lines for matching.
+    """
+    if condition_text is None:
+        return condition_text
+    s = str(condition_text)
+    s = re.sub(r"(?i)_x000d_", "\n", s)
+    s = re.sub(r"(?i)_x000a_", "\n", s)
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s
+
+
 def clean_condition_text(condition_text):
     """
     Clean up condition text for better readability.
@@ -634,13 +653,14 @@ def clean_condition_text(condition_text):
     To:
         "1. 33321-6422: starts with 33321-6422,333216422"
     """
-    import re
-    
     if not condition_text:
         return condition_text
-    
+
+    cleaned = normalize_condition_rule_text(condition_text)
+    cleaned = cleaned.strip()
+
     # Remove "Conditional rules:" header (case insensitive)
-    cleaned = re.sub(r'(?i)^conditional\s*rules\s*:\s*\n?', '', condition_text.strip())
+    cleaned = re.sub(r'(?i)^conditional\s*rules\s*:\s*\n?', '', cleaned)
     
     # Remove column name references like "TOPOSTALCODE ", "FROMPOSTALCODE ", etc.
     # Pattern: After the colon and value identifier, remove uppercase column names followed by space
@@ -900,7 +920,7 @@ def save_rate_card_output(file_path, output_path=None, save_excel=True, save_jso
 
 if __name__ == "__main__":
     # Set the input file to process (change this to switch files)
-    INPUT_FILE = "Rate Card Export - RA20241206008 v.1.xlsx"
+    INPUT_FILE = "Rate Card Export - RA20250424010 v.53 (IR2026040200093).xlsx"
     
     # Choose what to update: Excel, JSON, or both
     SAVE_EXCEL = False   # set False to skip writing the Excel result file
