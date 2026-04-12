@@ -267,7 +267,8 @@ def enrich_etof_with_isd_columns(df_etofs, mismatch_report_paths):
         # Rows in mismatch where this pair does not match
         s_isd = df_mismatch[isd_col].astype(str).str.strip()
         s_etof = df_mismatch[etof_col].astype(str).str.strip()
-        diff_mask = s_isd != s_etof
+        # Ignore case so e.g. SHIP_CITY_ISD "MUMBAI" vs SHIP_CITY_ETOF "Mumbai" is not treated as a mismatch
+        diff_mask = s_isd.str.lower() != s_etof.str.lower()
         df_diff = df_mismatch.loc[diff_mask][['ETOF_NUMBER', isd_col]].copy()
         if df_diff.empty:
             continue
@@ -285,8 +286,8 @@ def enrich_etof_with_isd_columns(df_etofs, mismatch_report_paths):
 
 
 if __name__ == "__main__":
-    #configure_enrichment(mismatch_report_paths=["Mismatch_Report_ISD2025122700385_DHL EXP US_20260209.xlsx"])
-    etof_dataframe, etof_column_names = process_etof_file('etofs_KWE Trucking.xlsx')
+    #configure_enrichment(mismatch_report_paths=["Rate Card Export - RA20250424010 v.53 (IR2026040200093).xlsx"])
+    etof_dataframe, etof_column_names = process_etof_file('etofs_02.04.2026 (IR2026040200093).xlsx')
     save_dataframe_to_excel(etof_dataframe, "etof_processed_apple.xlsx")
     save_dataframe_to_json(etof_dataframe, "etof_processed_apple.json")
     print(etof_dataframe.head())
