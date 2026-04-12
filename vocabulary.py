@@ -331,6 +331,8 @@ ETOF_TO_RATE_CARD_MAPPING = {
     'Lane Type': 'ORIGINAL_SERVICE',
     'Carrier Account Number': 'Billing account',
     'Shipping Condition': 'INVOICE_ENTITY',
+    # CARRIER_NAME is excluded from fuzzy matching; map explicitly (not ORIG_FILE_NAME).
+    'Carrier Name': 'CARRIER_NAME',
 }
 
 
@@ -575,6 +577,36 @@ def create_vocabulary_dataframe(
     return df_vocabulary
 
 
+def _backfill_carrier_name_from_carrier_rate_col(output_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    CARRIER_NAME (ETOF tag) and rate card column 'Carrier Name' are the same field.
+    If CARRIER_NAME is empty but Carrier Name has a value, copy into CARRIER_NAME.
+    """
+    if output_df is None or output_df.empty or "Carrier Name" not in output_df.columns:
+        return output_df
+    cn = output_df["Carrier Name"]
+
+    def _nonblank_mask(ser: pd.Series) -> pd.Series:
+        s = ser.astype(str).str.strip()
+        return ser.notna() & ~s.eq("") & ~s.str.lower().isin(("nan", "none"))
+
+    def _blank_mask(ser: pd.Series) -> pd.Series:
+        return ser.isna() | ser.astype(str).str.strip().eq("") | ser.astype(str).str.strip().str.lower().isin(
+            ("nan", "none")
+        )
+
+    if "CARRIER_NAME" not in output_df.columns:
+        out = output_df.copy()
+        out["CARRIER_NAME"] = cn
+        return out
+
+    out = output_df.copy()
+    need = _blank_mask(out["CARRIER_NAME"]) & _nonblank_mask(cn)
+    if need.any():
+        out.loc[need, "CARRIER_NAME"] = cn[need]
+    return out
+
+
 def map_and_rename_columns(
     rate_card_file_path: str,
     etof_file_path: Optional[str] = None,
@@ -718,28 +750,39 @@ def map_and_rename_columns(
         rule = None
         etof_columns = [col for col in etof_df.columns 
                         if not is_excluded_column(col) and col not in used_etof_columns]
-        if etof_columns:
-            # User mapping first
-            if ETOF_TO_RATE_CARD_MAPPING and rate_card_col in ETOF_TO_RATE_CARD_MAPPING:
-                user_col = ETOF_TO_RATE_CARD_MAPPING[rate_card_col]
-                if user_col in etof_columns and user_col not in used_etof_columns:
-                    etof_match = user_col
-                    rule = 'user'
-            if etof_match is None:
-                match, _, rule = find_column_match(rate_card_col, etof_columns, threshold=0.3)
-                if match and not is_excluded_column(match) and match not in used_etof_columns:
-                    etof_match = match
-                if rule is None and etof_match is None:
-                    rule = 'none'
-            if etof_match is not None:
-                etof_mappings[rate_card_col] = etof_match
-                used_etof_columns.add(etof_match)
-        
+        # User mapping first (explicit ETOF column may be excluded from fuzzy pool, e.g. CARRIER_NAME)
+        if ETOF_TO_RATE_CARD_MAPPING and rate_card_col in ETOF_TO_RATE_CARD_MAPPING:
+            user_col = ETOF_TO_RATE_CARD_MAPPING[rate_card_col]
+            if user_col in etof_df.columns and user_col not in used_etof_columns:
+                etof_match = user_col
+                rule = 'user'
+        if etof_match is None and etof_columns:
+            match, _, rule = find_column_match(rate_card_col, etof_columns, threshold=0.3)
+            if match and not is_excluded_column(match) and match not in used_etof_columns:
+                etof_match = match
+            if rule is None and etof_match is None:
+                rule = 'none'
+        if etof_match is not None:
+            etof_mappings[rate_card_col] = etof_match
+            used_etof_columns.add(etof_match)
+
         mapping_results.append({
             'Rate_Card_Column': rate_card_col,
             'ETOF_Column': etof_match if etof_match else 'NONE',
             'Rule': rule or 'none',
         })
+
+    # Fuzzy matching often picked ORIG_FILE_NAME for "Carrier Name" because CARRIER_NAME is excluded
+    # from the fuzzy pool; prefer CARRIER_NAME when that column exists.
+    if etof_mappings.get('Carrier Name') == 'ORIG_FILE_NAME' and 'CARRIER_NAME' in etof_df.columns:
+        used_etof_columns.discard('ORIG_FILE_NAME')
+        etof_mappings['Carrier Name'] = 'CARRIER_NAME'
+        used_etof_columns.add('CARRIER_NAME')
+        for row in mapping_results:
+            if row.get('Rate_Card_Column') == 'Carrier Name':
+                row['ETOF_Column'] = 'CARRIER_NAME'
+                row['Rule'] = 'user'
+                break
     
     # Step 4: Rename columns and include ALL rate card columns
     all_rate_card_cols_for_output = rate_card_columns_all.copy()
@@ -959,6 +1002,8 @@ def map_and_rename_columns(
         if not shipment_id_col_found:
             output_df['SHIPMENT_ID'] = None
             final_columns.append('SHIPMENT_ID')
+
+        output_df = _backfill_carrier_name_from_carrier_rate_col(output_df)
         
         print(f"    After Step 9: {len(output_df)} rows, {len(output_df.columns)} columns")
         print(f"    Final columns: {list(output_df.columns)}")
@@ -1083,8 +1128,8 @@ if __name__ == "__main__":
     try:
         # Main function: Map and rename columns
         etof_renamed, lc_renamed, origin_renamed = map_and_rename_columns(
-            rate_card_file_path="Rate Card Export - RA20241206008 v.1.xlsx",
-            etof_file_path="etofs_KWE Trucking.xlsx",
+            rate_card_file_path="Rate Card Export - RA20250424010 v.53 (IR2026040200093).xlsx",
+            etof_file_path="etofs_02.04.2026 (IR2026040200093).xlsx",
         )
     except Exception:
         pass  
